@@ -1,6 +1,0 @@
-@BrandSignal.API_HostAddress = http://localhost:5289
-
-GET {{BrandSignal.API_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###
