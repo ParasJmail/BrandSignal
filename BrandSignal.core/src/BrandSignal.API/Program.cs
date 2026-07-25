@@ -3,44 +3,33 @@ using BrandSignal.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// This tells the API bootloader to load our core business managers and our hardware tools
+// Register custom Application and Infrastructure layer services
 builder.Services.AddApplicationServices();
 builder.Services.AddInfraStructureServices(builder.Configuration);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+builder.Services.AddControllers();
+
+// Add Swagger/OpenAPI generation services
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "BrandSignal API V1");
+        c.RoutePrefix = "swagger"; // Available at http://localhost:<port>/swagger
+    });
 }
 
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
+app.UseAuthorization();
 
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
+// Route incoming requests to our Controllers (like CampaignsController.cs)
+app.MapControllers();
 
+// Kick off the web server (MUST be at the very bottom of executable statements)
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}

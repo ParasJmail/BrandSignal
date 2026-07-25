@@ -1,0 +1,12 @@
+## Ignore compiled binaries and temporary object folders
+bin/
+obj/
+
+## Ignore user-specific IDE settings (Visual Studio / VS Code)
+.vs/
+.vscode/
+.user/
+.suo/
+
+## Ignore local environment overrides
+appsettings.Development.json
