@@ -1,5 +1,6 @@
 using BrandSignal.Application;
 using BrandSignal.Infrastructure;
+using BrandSignal.API.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,7 +14,14 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Register Global Exception Handler
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
+
 var app = builder.Build();
+
+// Enable Exception Handling Middleware early in the pipeline
+app.UseExceptionHandler();
 
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
@@ -26,6 +34,7 @@ if (app.Environment.IsDevelopment())
     });
 }
 
+app.UseHttpsRedirection();
 app.UseAuthorization();
 
 // Route incoming requests to our Controllers (like CampaignsController.cs)
