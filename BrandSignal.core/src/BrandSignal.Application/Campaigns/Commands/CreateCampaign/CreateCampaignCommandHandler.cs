@@ -1,24 +1,29 @@
 using BrandSignal.Application.Common.Interaces;
 using BrandSignal.Domain.Entities;
+using FluentValidation;
 
 namespace BrandSignal.Application.Campaigns.Commands.CreateCampaign;
 
 public class CreateCampaignCommandHandler{
     private readonly IApplicationDbContext _dbContext;
     private readonly IRabbitMqService _rabbitMqService;
+    private readonly IValidator<CreateCampaignCommand> _validator;
 
     // The manager constructor requests our database and messaging interface contracts
-    public CreateCampaignCommandHandler(IApplicationDbContext dbContext, IRabbitMqService rabbitMqService){
+    public CreateCampaignCommandHandler(IApplicationDbContext dbContext, IRabbitMqService rabbitMqService, IValidator<CreateCampaignCommand> validator){
         _dbContext = dbContext;
         _rabbitMqService = rabbitMqService;
+        _validator = validator;
     }
 
     // The core execution handler that processes the audit workflow step-by-step
     public async Task<Guid> HandleAsync(CreateCampaignCommand command, CancellationToken cancellationToken){
-        // 1. Guard check: Ensure the user didn't submit blank strings
-        if (string.IsNullOrWhiteSpace(command.CompanyName) || string.IsNullOrWhiteSpace(command.TargetKeyword))
+
+        // 1. Guard check: Ensure the user didn't submit blank strings or exceed the max character limits for company name and keyword
+        var validationResult = await _validator.ValidateAsync(command, cancellationToken);
+        if(!validationResult.IsValid)
         {
-            throw new ArgumentException("Company Name and Target Keyword cannot be empty.");
+            throw new ValidationException(validationResult.Errors);    
         }
 
         // 2. Open a new Domain Case Folder (Campaign Entity) and write down the inputs
