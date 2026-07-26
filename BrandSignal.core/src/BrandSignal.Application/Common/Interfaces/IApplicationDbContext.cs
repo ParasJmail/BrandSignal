@@ -1,7 +1,7 @@
 using BrandSignal.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
-namespace BrandSignal.Application.Common.Interaces;
+namespace BrandSignal.Application.Common.Interfaces;
 
 public interface IApplicationDbContext
 {

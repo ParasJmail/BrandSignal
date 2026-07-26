@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using BrandSignal.Application.Common.Interaces;
+using BrandSignal.Application.Common.Interfaces;
 using RabbitMQ.Client;
 
 namespace BrandSignal.Infrastructure.Messaging;
