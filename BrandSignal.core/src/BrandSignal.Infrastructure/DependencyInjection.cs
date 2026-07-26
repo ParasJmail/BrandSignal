@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using BrandSignal.Infrastructure.BackgroundJobs;
+using BrandSignal.Infrastructure.Services;
 
 namespace BrandSignal.Infrastructure;
 
@@ -25,6 +26,9 @@ public static class DependencyInjection{
 
         // Register the background worker service
         services.AddHostedService<CampaignAuditWorker>();
+
+        // Inside AddInfraStructureServices method:
+        services.AddTransient<ICampaignNotificationService, SignalRNotificationService>();
 
         return services;
     }

@@ -16,13 +16,15 @@ public class CampaignAuditWorker : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private IConnection? _connection;
     private IChannel? _channel;
+    private ICampaignNotificationService _notificationService;
 
     private const string QueueName = "campaign_audit_queue";
 
-    public CampaignAuditWorker(ILogger<CampaignAuditWorker> logger, IServiceScopeFactory scopeFactory)
+    public CampaignAuditWorker(ILogger<CampaignAuditWorker> logger, IServiceScopeFactory scopeFactory, ICampaignNotificationService notificationService)
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
+        _notificationService = notificationService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -105,6 +107,9 @@ public class CampaignAuditWorker : BackgroundService
         await context.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation("Successfully completed AI audit for Campaign: {CompanyName}, Campaign ID: {CampaignId}", campaign.CompanyName, campaign.Id);
+
+        // Notify connected web clients in real time via SignalR
+        await _notificationService.NotificationAuditCompletedAsync(campaignId, "Completed", campaign.CompanyName);
     }
 
     public override void Dispose()
