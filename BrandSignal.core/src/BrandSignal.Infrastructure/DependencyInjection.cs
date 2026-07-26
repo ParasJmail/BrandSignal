@@ -4,6 +4,7 @@ using BrandSignal.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using BrandSignal.Infrastructure.BackgroundJobs;
 
 namespace BrandSignal.Infrastructure;
 
@@ -21,6 +22,9 @@ public static class DependencyInjection{
 
         // 3. Map our message queue interface contract to the real RabbitMQ service client
         services.AddScoped<IRabbitMqService, RabbitMQService>();
+
+        // Register the background worker service
+        services.AddHostedService<CampaignAuditWorker>();
 
         return services;
     }
