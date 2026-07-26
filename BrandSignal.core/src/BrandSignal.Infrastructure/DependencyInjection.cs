@@ -1,4 +1,4 @@
-using BrandSignal.Application.Common.Interaces;
+using BrandSignal.Application.Common.Interfaces;
 using BrandSignal.Infrastructure.Messaging;
 using BrandSignal.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;

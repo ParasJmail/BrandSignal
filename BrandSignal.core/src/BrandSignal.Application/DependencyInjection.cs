@@ -1,6 +1,8 @@
 using BrandSignal.Application.Campaigns.Commands.CreateCampaign;
 using Microsoft.Extensions.DependencyInjection;
 using FluentValidation;
+using BrandSignal.Application.Campaigns.Queries.GetCampaigns;
+using BrandSignal.Application.Campaigns.Queries.GetCampaignById;
 
 namespace BrandSignal.Application;
 
@@ -13,6 +15,8 @@ public static class DependencyInjection
         services.AddScoped<CreateCampaignCommandHandler>();
         // Automatically registers all validators in the Application assembly
         services.AddValidatorsFromAssembly(typeof(DependencyInjection).Assembly);
+        services.AddScoped<GetCampaignsQueryHandler>();
+        services.AddScoped<GetCampaignByIdQueryHandler>();
 
         return services;
     }

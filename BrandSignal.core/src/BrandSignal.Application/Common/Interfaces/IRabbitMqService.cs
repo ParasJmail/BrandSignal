@@ -1,4 +1,4 @@
-namespace BrandSignal.Application.Common.Interaces;
+namespace BrandSignal.Application.Common.Interfaces;
 
 public interface IRabbitMqService{
     // This method takes the unique Case Number (campaignId), 
