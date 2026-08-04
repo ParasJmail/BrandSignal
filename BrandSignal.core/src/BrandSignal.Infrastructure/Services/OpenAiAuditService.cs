@@ -33,13 +33,20 @@ public class OpenAiAuditService: IAiAuditService
 
         var requestBody = new
         {
-            model = "gpt-4o-mini",
+            // Change 1: Use Groq's Llama model
+            model = "llama-3.1-8b-instant",
             messages = new[]
             {
                 new
                 {
                     role = "system",
-                    content = "You are an expert AI brand strategist. Analyze the given company and target keyword, and respond ONLY with a valid JSON object matching the requested schema."
+                    content = @"You are an expert AI brand strategist. 
+                    Analyze the company and target keyword, and return ONLY a valid JSON object with the following keys:
+                    - sentimentScore (integer, 0 to 100)
+                    - brandPositioning (string)
+                    - topCompetitors (array of strings)
+                    - recommendedKeywords (array of strings)
+                    - summary (string)" 
                 },
                 new
                 {
@@ -49,35 +56,23 @@ public class OpenAiAuditService: IAiAuditService
             },
             response_format = new
             {
-                type = "json_schema",
-                json_schema = new
-                {
-                    name = "campaign_audit",
-                    strict = true,
-                    schema = new
-                    {
-                        type = "object",
-                        properties = new
-                        {
-                            sentimentScore = new { type = "integer", description = "Score between 0 and 100" },
-                            brandPositioning = new { type = "string" },
-                            topCompetitors = new { type = "array", items = new { type = "string" } },
-                            recommendedKeywords = new { type = "array", items = new { type = "string" } },
-                            summary = new { type = "string" }
-                        },
-                        required = new[] { "sentimentScore", "brandPositioning", "topCompetitors", "recommendedKeywords", "summary" },
-                        additionalProperties = false
-                    }
-                }
+                type = "json_object",
             }
         };
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
+        // Change 2: Point HttpRequestMessage to Groq's OpenAI-compatible endpoint
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/chat/completions");
         request.Headers.Add("Authorization", $"Bearer {apiKey}");
         request.Content = JsonContent.Create(requestBody);
 
         var response = await _httpClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        // If error occurs, log full body to inspect Groq's detailed error message
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            _logger.LogError("Groq API error ({StatusCode}): {ErrorDetails}", response.StatusCode, errorContent);
+            response.EnsureSuccessStatusCode();
+        }
 
         using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var jsonDoc = await JsonDocument.ParseAsync(responseStream, cancellationToken: cancellationToken);
