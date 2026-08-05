@@ -90,6 +90,9 @@ public class CampaignAuditWorker : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
 
+        // 1. Resolve IAiAuditService inside the scope to ensure it has the correct lifetime
+        var aiAuditService = scope.ServiceProvider.GetRequiredService<IAiAuditService>();
+
         var campaign = await context.Campaigns.FindAsync(new object[] { campaignId }, cancellationToken);
 
         if(campaign is null)
@@ -100,15 +103,22 @@ public class CampaignAuditWorker : BackgroundService
 
         _logger.LogInformation("Starting AI audit simulation for Campaign: {CompanyName}, Campaign ID: {CampaignId}", campaign.CompanyName, campaign.Id);
 
-        // Simulate AI audit processing delay
-        await Task.Delay(3000, cancellationToken);
+        // 2. Call real AI audit service instead of Task.Delay
+        var auditResult = await aiAuditService.AnalyzeCampaignAsync(campaign.CompanyName, campaign.TargetKeyword, cancellationToken);
 
+        _logger.LogInformation("AI Audit complete. Sentiment Score: {Score}/100", auditResult.SentimentScore);
+
+        // 3. Update database state
         campaign.Status = "Completed";
+        // If your Campaign entity has an AuditReportJson or similar property, save it here:
+        // campaign.AuditReportJson = JsonSerializer.Serialize(auditResult);
+
         await context.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation("Successfully completed AI audit for Campaign: {CompanyName}, Campaign ID: {CampaignId}", campaign.CompanyName, campaign.Id);
 
         // Notify connected web clients in real time via SignalR
+        // 4. Notify clients via SignalR
         await _notificationService.NotificationAuditCompletedAsync(campaignId, "Completed", campaign.CompanyName);
     }
 

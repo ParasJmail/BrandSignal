@@ -30,6 +30,9 @@ public static class DependencyInjection{
         // Inside AddInfraStructureServices method:
         services.AddTransient<ICampaignNotificationService, SignalRNotificationService>();
 
+        // Inside AddInfrastructureServices:
+        services.AddHttpClient<IAiAuditService, OpenAiAuditService>();
+
         return services;
     }
 }
