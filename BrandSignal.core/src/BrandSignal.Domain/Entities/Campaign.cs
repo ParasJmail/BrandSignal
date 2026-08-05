@@ -26,4 +26,7 @@ public class Campaign
 
     // The '?' means it stays empty (null) until the audit is completely done.
     public DateTime? AuditedAt {get;set;}
+
+    // Navigation property: One Campaign can have multiple Audit Reports over time
+    public ICollection<AuditReport> AuditReports { get; set; } = new List<AuditReport>();
 }
