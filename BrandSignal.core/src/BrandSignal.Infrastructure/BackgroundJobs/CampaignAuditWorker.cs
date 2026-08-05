@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using BrandSignal.Application.Common.Interfaces;
 using Microsoft.Extensions.Hosting;
+using BrandSignal.Domain.Entities;
 
 namespace BrandSignal.Infrastructure.BackgroundJobs;
 
@@ -103,16 +104,37 @@ public class CampaignAuditWorker : BackgroundService
 
         _logger.LogInformation("Starting AI audit simulation for Campaign: {CompanyName}, Campaign ID: {CampaignId}", campaign.CompanyName, campaign.Id);
 
+        // a. Execute AI audit call
         // 2. Call real AI audit service instead of Task.Delay
         var auditResult = await aiAuditService.AnalyzeCampaignAsync(campaign.CompanyName, campaign.TargetKeyword, cancellationToken);
 
         _logger.LogInformation("AI Audit complete. Sentiment Score: {Score}/100", auditResult.SentimentScore);
 
+        // b. Map AI output ontp relational AuditReport entity and child collectiosn save to database
+        var auditReport = new AuditReport
+        {
+            CampaignId = campaign.Id,
+            SentimentScore = auditResult.SentimentScore,
+            BrandPositioning = auditResult.BrandPositioning,
+            Summary = auditResult.Summary,
+            CreatedAt = DateTime.UtcNow,
+            Competitors = auditResult.TopCompetitors
+                .Select(name => new AuditCompetitor { Name = name })
+                .ToList(),
+            RecommendedKeywords = auditResult.RecommendedKeywords
+                .Select(keyword => new AuditRecommendedKeyword { Keyword = keyword })
+                .ToList()
+        };
+
+        // c. Update coreCampaign fields and save AuditReport entity to database
         // 3. Update database state
         campaign.Status = "Completed";
-        // If your Campaign entity has an AuditReportJson or similar property, save it here:
-        // campaign.AuditReportJson = JsonSerializer.Serialize(auditResult);
+        campaign.VisibilityScore = auditResult.SentimentScore;
+        campaign.AuditSummary = auditResult.Summary;
+        campaign.AuditedAt = DateTime.UtcNow;
 
+        // d. Save AuditReport entity to database
+        context.AuditReports.Add(auditReport);
         await context.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation("Successfully completed AI audit for Campaign: {CompanyName}, Campaign ID: {CampaignId}", campaign.CompanyName, campaign.Id);

@@ -8,6 +8,9 @@ public interface IApplicationDbContext
     // DbSet is like a live Excel data sheet of your Campaigns table.
     // The application can read, update, or add rows to this sheet.
     DbSet<Campaign> Campaigns {get;}
+    DbSet<AuditReport> AuditReports { get; }
+    DbSet<AuditCompetitor> AuditCompetitors { get; }
+    DbSet<AuditRecommendedKeyword> AuditRecommendedKeywords { get; }
 
     // This promises that the database will have a method to save our changes 
     // in the background without freezing up the user interface.
