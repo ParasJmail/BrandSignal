@@ -8,6 +8,8 @@ using System.Text.Json;
 using BrandSignal.Application.Common.Interfaces;
 using Microsoft.Extensions.Hosting;
 using BrandSignal.Domain.Entities;
+using Polly;
+using Polly.Retry;
 
 namespace BrandSignal.Infrastructure.BackgroundJobs;
 
@@ -19,13 +21,35 @@ public class CampaignAuditWorker : BackgroundService
     private IChannel? _channel;
     private ICampaignNotificationService _notificationService;
 
-    private const string QueueName = "campaign_audit_queue";
+    private const string MainExchange = "campaign_audit_exchange";
+    private const string MainQueue = "campaign_audit_queue";
+    private const string MainRoutingKey = "campaign.audit.created";
+    
+    private const string DlxExchange = "campaign_audit_dlx";
+    private const string DlqQueue = "campaign_audit_dlq";
+    private const string DlqRoutingKey = "campaign.audit.deadletter";
+
+    private readonly AsyncRetryPolicy _retryPolicy;
 
     public CampaignAuditWorker(ILogger<CampaignAuditWorker> logger, IServiceScopeFactory scopeFactory, ICampaignNotificationService notificationService)
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
         _notificationService = notificationService;
+
+        // Configure Polly Async Retry Policy: # retries with exponential backoff (2s, 4s, 8s)
+        _retryPolicy = Policy
+            .Handle<Exception>()
+            .WaitAndRetryAsync(
+                retryCount: 3,
+                sleepDurationProvider: retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                onRetry: (exception, timeSpan, retryCount, context) =>
+                {
+                    _logger.LogWarning(exception,
+                        "Transient error occured while processing campaign audit. Retrying  in {TimeSpan} seconds. Retry attempt {RetryCount}.",
+                        timeSpan.TotalSeconds, retryCount);
+                }
+            );
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -36,9 +60,17 @@ public class CampaignAuditWorker : BackgroundService
             _connection = await factory.CreateConnectionAsync(stoppingToken);
             _channel = await _connection.CreateChannelAsync(cancellationToken : stoppingToken);
 
+            // 1. Declare Dead Letter Exchange (DLX) & Queue (DLQ)
+            await _channel.ExchangeDeclareAsync(
+                exchange: DlxExchange,
+                type: ExchangeType.Direct,
+                durable: true,
+                autoDelete: false,
+                cancellationToken: stoppingToken
+            );
 
             await _channel.QueueDeclareAsync(
-                queue: QueueName,
+                queue: DlqQueue,
                 durable: true,
                 exclusive: false,
                 autoDelete: false,
@@ -46,9 +78,30 @@ public class CampaignAuditWorker : BackgroundService
                 cancellationToken: stoppingToken
             );
 
+            await _channel.QueueBindAsync(
+                queue: DlqQueue,
+                exchange: DlxExchange,
+                routingKey: DlqRoutingKey,
+                cancellationToken: stoppingToken);
+
+            // 2. Declare Main Queue configured with DLX arguments
+            var mainQueueArgs = new Dictionary<string, object?>
+            {
+                { "x-dead-letter-exchange", DlxExchange },
+                { "x-dead-letter-routing-key", DlqRoutingKey }
+            };
+
+            await _channel.QueueDeclareAsync(
+                queue: MainQueue,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                arguments: mainQueueArgs,
+                cancellationToken: stoppingToken);
+
             await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false, cancellationToken: stoppingToken);
 
-            _logger.LogInformation("Successfully connected to RabbitMQ queue: {QueueName}", QueueName);
+            _logger.LogInformation("Successfully connected to RabbitMQ queue. Main Queue: {MainQueue}, DLQ: {DlqQueue}", MainQueue, DlqQueue);
 
             // v7 uses Async EventingBasicConsumer
             var consumer = new AsyncEventingBasicConsumer(_channel);
@@ -62,27 +115,33 @@ public class CampaignAuditWorker : BackgroundService
 
                 try
                 {
-                    var auditMessage = JsonSerializer.Deserialize<CampaignCreatedMessage>(message);
-
-                    if(auditMessage != null)
+                    await _retryPolicy.ExecuteAsync( async () =>
                     {
-                        await ProcessCampaignAuditAsync(auditMessage.CampaignId, stoppingToken);
-                    }
+                        var auditMessage = JsonSerializer.Deserialize<CampaignCreatedMessage>(message);
 
+                        if(auditMessage != null)
+                        {
+                            await ProcessCampaignAuditAsync(auditMessage.CampaignId, stoppingToken);
+                        }
+                    });
+
+                    // Acknowledge successful processing
                     await _channel.BasicAckAsync(deliveryTag: ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error processing message: {Message}", message);
-                    await _channel.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: true, cancellationToken: stoppingToken);
+
+                    // Requeue = false instructs RabbitMQ to forward this poison message to the DLX!
+                    await _channel.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: false, cancellationToken: stoppingToken);
                 }
             };
 
-            await _channel.BasicConsumeAsync(queue: QueueName, autoAck: false, consumer: consumer, cancellationToken: stoppingToken);
+            await _channel.BasicConsumeAsync(queue: MainQueue, autoAck: false, consumer: consumer, cancellationToken: stoppingToken);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error connecting to RabbitMQ queue: {QueueName}", QueueName);
+            _logger.LogError(ex, "Error connecting to RabbitMQ queue: {MainQueue}", MainQueue);
         }
     }
 
