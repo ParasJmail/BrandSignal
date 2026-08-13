@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using FluentValidation;
 using BrandSignal.Application.Campaigns.Queries.GetCampaigns;
 using BrandSignal.Application.Campaigns.Queries.GetCampaignById;
+using System.Reflection;
 
 namespace BrandSignal.Application;
 
@@ -17,7 +18,10 @@ public static class DependencyInjection
         services.AddValidatorsFromAssembly(typeof(DependencyInjection).Assembly);
         services.AddScoped<GetCampaignsQueryHandler>();
         services.AddScoped<GetCampaignByIdQueryHandler>();
-
+        services.AddMediatR(cfg =>
+        {
+            cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly());
+        });
         return services;
     }
 }

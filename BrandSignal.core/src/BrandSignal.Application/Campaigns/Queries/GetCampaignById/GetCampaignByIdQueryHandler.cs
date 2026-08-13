@@ -1,10 +1,11 @@
 using BrandSignal.Application.Common.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using BrandSignal.Application.Campaigns.Queries.GetCampaigns;
+using MediatR;
 
 namespace BrandSignal.Application.Campaigns.Queries.GetCampaignById;
 
-public class GetCampaignByIdQueryHandler
+public class GetCampaignByIdQueryHandler : IRequestHandler<GetCampaignByIdQuery, CampaignResponse>
 {
     public readonly IApplicationDbContext _context;
 
@@ -13,11 +14,15 @@ public class GetCampaignByIdQueryHandler
         _context = context;
     }
 
-    public async Task<CampaignResponse> HandleAsync(GetCampaignByIdQuery query, CancellationToken cancellationToken)
+    public async Task<CampaignResponse> Handle(GetCampaignByIdQuery query, CancellationToken cancellationToken)
     {
         var campaign = await _context.Campaigns
-            .AsNoTracking() // Read-only performance boost: we don't need to track changes for this query
-            .FirstOrDefaultAsync( c => c.Id == query.Id , cancellationToken);
+            .AsNoTracking()
+            .Include(c => c.AuditReports)
+                .ThenInclude(r => r.Competitors)
+            .Include(c => c.AuditReports)
+                .ThenInclude(r => r.RecommendedKeywords)
+            .FirstOrDefaultAsync(c => c.Id == query.Id, cancellationToken);
 
         if (campaign is null)
         {
@@ -29,7 +34,21 @@ public class GetCampaignByIdQueryHandler
             campaign.CompanyName,
             campaign.TargetKeyword,
             campaign.Status.ToString(),
-            campaign.CreatedAt
+            campaign.VisibilityScore,
+            campaign.AuditSummary,
+            campaign.CreatedAt,
+            campaign.AuditedAt,
+            campaign.AuditReports
+                .OrderByDescending(r => r.CreatedAt)
+                .Select(report => new AuditReportResponse(
+                    report.Id,
+                    report.SentimentScore,
+                    report.BrandPositioning,
+                    report.Summary,
+                    report.CreatedAt,
+                    report.Competitors.Select(c => c.Name).ToList(),
+                    report.RecommendedKeywords.Select(k => k.Keyword).ToList()
+                )).ToList()
         );
     }
 }

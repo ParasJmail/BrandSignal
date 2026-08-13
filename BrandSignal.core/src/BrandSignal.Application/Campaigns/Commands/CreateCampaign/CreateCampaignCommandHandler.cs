@@ -1,10 +1,11 @@
 using BrandSignal.Application.Common.Interfaces;
 using BrandSignal.Domain.Entities;
 using FluentValidation;
+using MediatR;
 
 namespace BrandSignal.Application.Campaigns.Commands.CreateCampaign;
 
-public class CreateCampaignCommandHandler{
+public class CreateCampaignCommandHandler : IRequestHandler<CreateCampaignCommand, Guid>{
     private readonly IApplicationDbContext _dbContext;
     private readonly IRabbitMqService _rabbitMqService;
     private readonly IValidator<CreateCampaignCommand> _validator;
@@ -17,7 +18,7 @@ public class CreateCampaignCommandHandler{
     }
 
     // The core execution handler that processes the audit workflow step-by-step
-    public async Task<Guid> HandleAsync(CreateCampaignCommand command, CancellationToken cancellationToken){
+    public async Task<Guid> Handle(CreateCampaignCommand command, CancellationToken cancellationToken){
 
         // 1. Guard check: Ensure the user didn't submit blank strings or exceed the max character limits for company name and keyword
         var validationResult = await _validator.ValidateAsync(command, cancellationToken);
