@@ -113,11 +113,13 @@ public class CampaignAuditWorker : BackgroundService
 
                 _logger.LogInformation("Received message from queue: {Message}", message);
 
+                CampaignCreatedMessage? auditMessage = null;
+
                 try
                 {
                     await _retryPolicy.ExecuteAsync( async () =>
                     {
-                        var auditMessage = JsonSerializer.Deserialize<CampaignCreatedMessage>(message);
+                        auditMessage = JsonSerializer.Deserialize<CampaignCreatedMessage>(message);
 
                         if(auditMessage != null)
                         {
@@ -131,6 +133,12 @@ public class CampaignAuditWorker : BackgroundService
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error processing message: {Message}", message);
+
+                    // Update SQL Database status to Failed if campaign ID is present
+                    if(auditMessage != null && auditMessage.CampaignId != Guid.Empty)
+                    {
+                        await MarkCampaignAsFailedAsync(auditMessage.CampaignId, ex.Message, stoppingToken);
+                    }
 
                     // Requeue = false instructs RabbitMQ to forward this poison message to the DLX!
                     await _channel.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: false, cancellationToken: stoppingToken);
@@ -201,6 +209,38 @@ public class CampaignAuditWorker : BackgroundService
         // Notify connected web clients in real time via SignalR
         // 4. Notify clients via SignalR
         await _notificationService.NotificationAuditCompletedAsync(campaignId, "Completed", campaign.CompanyName);
+    }
+
+    public async Task MarkCampaignAsFailedAsync(Guid campaignId, string errorMessage, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
+
+            var campaign = await context.Campaigns.FindAsync(new object[] { campaignId }, cancellationToken);
+
+            if (campaign is not null)
+            {
+                campaign.Status = "Failed";
+                campaign.AuditSummary = $"Audit Failed: {errorMessage}";
+                campaign.AuditedAt = DateTime.UtcNow;
+
+                await context.SaveChangesAsync(cancellationToken);
+                _logger.LogWarning("Updated Campaign ID {CampaignId} status to 'Failed' in database.", campaignId);
+
+                // Send real-time failure alert via SignalR
+                await _notificationService.NotificationAuditCompletedAsync(campaignId, "Failed", campaign.CompanyName);
+            }
+            else
+            {
+                _logger.LogWarning("Campaign with ID {CampaignId} not found in database. Cannot mark as failed.", campaignId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to update Campaign ID {CampaignId} status to 'Failed' in database.", campaignId);
+        }
     }
 
     public override void Dispose()
