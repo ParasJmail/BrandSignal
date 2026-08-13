@@ -25,23 +25,30 @@ public class RabbitMQService : IRabbitMqService{
             string jsonString = JsonSerializer.Serialize(messagePayload);
 
         // 3. Convert that text string into raw binary bytes so it can travel over network wires
-            byte[] body = Encoding.UTF8.GetBytes(jsonString);
+        byte[] body = Encoding.UTF8.GetBytes(jsonString);
 
         // 4. Setup our connection factory to find the local RabbitMQ server pipeline
         var factory = new ConnectionFactory {HostName = "localhost"};
 
         // 5. Open the physical network socket connection and create an execution channel
-            using var connection = await factory.CreateConnectionAsync();
-            using var channel = await connection.CreateChannelAsync();
+        using var connection = await factory.CreateConnectionAsync();
+        using var channel = await connection.CreateChannelAsync();
 
-        // 6. Declare a secure queue message line named "campaign_audit_queue" 
+        // 6. Define queue arguments to match CampaignAuditWorker
+        var queueArgs = new Dictionary<string, object?>
+        {
+            { "x-dead-letter-exchange", "campaign_audit_dlx" },
+            { "x-dead-letter-routing-key", "campaign.audit.deadletter" }
+        };
+
+        //Declare a secure queue message line named "campaign_audit_queue" 
         // ensuring it won't crash even if the server restarts (durable: true)
             await channel.QueueDeclareAsync(
                 queue: "campaign_audit_queue",
                 durable: true,
                 exclusive: false,
                 autoDelete: false,
-                arguments: null);
+                arguments: queueArgs);
 
         // 7. Publish the binary data packet straight into the queue line
             await channel.BasicPublishAsync(

@@ -1,11 +1,12 @@
 using BrandSignal.Application.Campaigns.Queries.GetCampaignById;
 using BrandSignal.Application.Common.Interfaces;
 using BrandSignal.Application.Common.Models;
+using MediatR;
 using Microsoft.EntityFrameworkCore;
 
 namespace BrandSignal.Application.Campaigns.Queries.GetCampaigns;
 
-public class GetCampaignsQueryHandler
+public class GetCampaignsQueryHandler : IRequestHandler<GetCampaignQuery, PaginatedList<CampaignResponse>>
 {
     public readonly IApplicationDbContext _context;
 
@@ -14,7 +15,7 @@ public class GetCampaignsQueryHandler
         _context = context;
     }
 
-    public async Task<PaginatedList<CampaignResponse>> HandleAsync(GetCampaignQuery query, CancellationToken cancellationToken)
+    public async Task<PaginatedList<CampaignResponse>> Handle(GetCampaignQuery query, CancellationToken cancellationToken)
     {
         // 1. Start with base IQueryable (No tracking for performance)
         var collection = _context.Campaigns.AsNoTracking();
@@ -51,7 +52,11 @@ public class GetCampaignsQueryHandler
                 c.CompanyName,
                 c.TargetKeyword,
                 c.Status.ToString(),
-                c.CreatedAt
+                c.VisibilityScore,
+                c.AuditSummary,
+                c.CreatedAt,
+                c.AuditedAt,
+                new List<AuditReportResponse>()
             ))
             .ToListAsync(cancellationToken);
         

@@ -5,5 +5,9 @@ public record CampaignResponse(
     string CompanyName,
     string TargetKeyword,
     string Status,
-    DateTime CreatedAtUtc
+    int VisibilityScore,
+    string AuditSummary,
+    DateTime CreatedAtUtc,
+    DateTime? AuditedAtUtc,
+    List<AuditReportResponse> AuditReports
 );
