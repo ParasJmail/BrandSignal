@@ -15,8 +15,13 @@ public static class DependencyInjection{
     {
         // 1. Read our connection settings capsule and wire up our SQL Server Database
         services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseSqlServer(configuration.GetConnectionString("DefaultConnection"),
-                builder => builder.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName)));
+            options.UseSqlServer(
+                configuration.GetConnectionString("DefaultConnection"),
+                sqlServerOptions =>
+                {
+                    sqlServerOptions.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
+                    sqlServerOptions.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName);
+                }));
 
         // 2. Map our custom database interface contract to the real implementation class
         services.AddScoped<IApplicationDbContext>(provider => provider.GetRequiredService<ApplicationDbContext>());
