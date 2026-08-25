@@ -1,15 +1,14 @@
-using Microsoft.EntityFrameworkCore.Metadata;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
 using System.Text;
 using System.Text.Json;
 using BrandSignal.Application.Common.Interfaces;
-using Microsoft.Extensions.Hosting;
 using BrandSignal.Domain.Entities;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.Retry;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 
 namespace BrandSignal.Infrastructure.BackgroundJobs;
 
@@ -19,25 +18,26 @@ public class CampaignAuditWorker : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private IConnection? _connection;
     private IChannel? _channel;
-    private ICampaignNotificationService _notificationService;
+    private readonly ICampaignNotificationService _notificationService;
 
-    private const string MainExchange = "campaign_audit_exchange";
-    private const string MainQueue = "campaign_audit_queue";
-    private const string MainRoutingKey = "campaign.audit.created";
-    
+    // Node.js Scraper publishes completed results onto this queue
+    private const string ResultsQueue = "audit_results_queue";
     private const string DlxExchange = "campaign_audit_dlx";
     private const string DlqQueue = "campaign_audit_dlq";
     private const string DlqRoutingKey = "campaign.audit.deadletter";
 
     private readonly AsyncRetryPolicy _retryPolicy;
 
-    public CampaignAuditWorker(ILogger<CampaignAuditWorker> logger, IServiceScopeFactory scopeFactory, ICampaignNotificationService notificationService)
+    public CampaignAuditWorker(
+        ILogger<CampaignAuditWorker> logger,
+        IServiceScopeFactory scopeFactory,
+        ICampaignNotificationService notificationService)
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
         _notificationService = notificationService;
 
-        // Configure Polly Async Retry Policy: # retries with exponential backoff (2s, 4s, 8s)
+        // Configure Polly Async Retry Policy: 3 retries with exponential backoff
         _retryPolicy = Policy
             .Handle<Exception>()
             .WaitAndRetryAsync(
@@ -46,7 +46,7 @@ public class CampaignAuditWorker : BackgroundService
                 onRetry: (exception, timeSpan, retryCount, context) =>
                 {
                     _logger.LogWarning(exception,
-                        "Transient error occured while processing campaign audit. Retrying  in {TimeSpan} seconds. Retry attempt {RetryCount}.",
+                        "Transient error occurred while saving audit results to DB. Retrying in {TimeSpan} seconds. Retry attempt {RetryCount}.",
                         timeSpan.TotalSeconds, retryCount);
                 }
             );
@@ -58,7 +58,7 @@ public class CampaignAuditWorker : BackgroundService
         {
             var factory = new ConnectionFactory { HostName = "localhost" };
             _connection = await factory.CreateConnectionAsync(stoppingToken);
-            _channel = await _connection.CreateChannelAsync(cancellationToken : stoppingToken);
+            _channel = await _connection.CreateChannelAsync(cancellationToken: stoppingToken);
 
             // 1. Declare Dead Letter Exchange (DLX) & Queue (DLQ)
             await _channel.ExchangeDeclareAsync(
@@ -84,26 +84,19 @@ public class CampaignAuditWorker : BackgroundService
                 routingKey: DlqRoutingKey,
                 cancellationToken: stoppingToken);
 
-            // 2. Declare Main Queue configured with DLX arguments
-            var mainQueueArgs = new Dictionary<string, object?>
-            {
-                { "x-dead-letter-exchange", DlxExchange },
-                { "x-dead-letter-routing-key", DlqRoutingKey }
-            };
-
+            // 2. Declare the Results Queue (consumed from Node.js scraper)
             await _channel.QueueDeclareAsync(
-                queue: MainQueue,
+                queue: ResultsQueue,
                 durable: true,
                 exclusive: false,
                 autoDelete: false,
-                arguments: mainQueueArgs,
+                arguments: null,
                 cancellationToken: stoppingToken);
 
             await _channel.BasicQosAsync(prefetchSize: 0, prefetchCount: 1, global: false, cancellationToken: stoppingToken);
 
-            _logger.LogInformation("Successfully connected to RabbitMQ queue. Main Queue: {MainQueue}, DLQ: {DlqQueue}", MainQueue, DlqQueue);
+            _logger.LogInformation("CampaignAuditWorker connected. Listening for scraper results on queue: '{ResultsQueue}'", ResultsQueue);
 
-            // v7 uses Async EventingBasicConsumer
             var consumer = new AsyncEventingBasicConsumer(_channel);
 
             consumer.ReceivedAsync += async (model, ea) =>
@@ -111,104 +104,91 @@ public class CampaignAuditWorker : BackgroundService
                 var body = ea.Body.ToArray();
                 var message = Encoding.UTF8.GetString(body);
 
-                _logger.LogInformation("Received message from queue: {Message}", message);
+                _logger.LogInformation("Received audit result payload from queue: {Message}", message);
 
-                CampaignCreatedMessage? auditMessage = null;
+                ScraperResultMessage? auditResult = null;
 
                 try
                 {
-                    await _retryPolicy.ExecuteAsync( async () =>
+                    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    auditResult = JsonSerializer.Deserialize<ScraperResultMessage>(message, options);
+
+                    if (auditResult != null && auditResult.CampaignId != Guid.Empty)
                     {
-                        auditMessage = JsonSerializer.Deserialize<CampaignCreatedMessage>(message);
-
-                        if(auditMessage != null)
+                        // Save to SQL Database with Polly retry policy
+                        await _retryPolicy.ExecuteAsync(async () =>
                         {
-                            await ProcessCampaignAuditAsync(auditMessage.CampaignId, stoppingToken);
-                        }
-                    });
+                            await SaveAuditResultToDatabaseAsync(auditResult, stoppingToken);
+                        });
+                    }
 
-                    // Acknowledge successful processing
+                    // Acknowledge message delivery
                     await _channel.BasicAckAsync(deliveryTag: ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error processing message: {Message}", message);
+                    _logger.LogError(ex, "Permanent failure saving audit result for message: {Message}. Routing to DLQ.", message);
 
-                    // Update SQL Database status to Failed if campaign ID is present
-                    if(auditMessage != null && auditMessage.CampaignId != Guid.Empty)
+                    if (auditResult != null && auditResult.CampaignId != Guid.Empty)
                     {
-                        await MarkCampaignAsFailedAsync(auditMessage.CampaignId, ex.Message, stoppingToken);
+                        await MarkCampaignAsFailedAsync(auditResult.CampaignId, ex.Message, stoppingToken);
                     }
 
-                    // Requeue = false instructs RabbitMQ to forward this poison message to the DLX!
+                    // Requeue = false sends poison message to DLQ
                     await _channel.BasicNackAsync(deliveryTag: ea.DeliveryTag, multiple: false, requeue: false, cancellationToken: stoppingToken);
                 }
             };
 
-            await _channel.BasicConsumeAsync(queue: MainQueue, autoAck: false, consumer: consumer, cancellationToken: stoppingToken);
+            await _channel.BasicConsumeAsync(queue: ResultsQueue, autoAck: false, consumer: consumer, cancellationToken: stoppingToken);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error connecting to RabbitMQ queue: {MainQueue}", MainQueue);
+            _logger.LogError(ex, "Error connecting to RabbitMQ queue: {ResultsQueue}", ResultsQueue);
         }
     }
 
-    private async Task ProcessCampaignAuditAsync(Guid campaignId, CancellationToken cancellationToken)
+    private async Task SaveAuditResultToDatabaseAsync(ScraperResultMessage result, CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
 
-        // 1. Resolve IAiAuditService inside the scope to ensure it has the correct lifetime
-        var aiAuditService = scope.ServiceProvider.GetRequiredService<IAiAuditService>();
+        var campaign = await context.Campaigns.FindAsync(new object[] { result.CampaignId }, cancellationToken);
 
-        var campaign = await context.Campaigns.FindAsync(new object[] { campaignId }, cancellationToken);
-
-        if(campaign is null)
+        if (campaign is null)
         {
-            _logger.LogWarning("Campaign with ID {CampaignId} not found.", campaignId);
+            _logger.LogWarning("Campaign with ID {CampaignId} not found in database.", result.CampaignId);
             return;
         }
 
-        _logger.LogInformation("Starting AI audit simulation for Campaign: {CompanyName}, Campaign ID: {CampaignId}", campaign.CompanyName, campaign.Id);
-
-        // a. Execute AI audit call
-        // 2. Call real AI audit service instead of Task.Delay
-        var auditResult = await aiAuditService.AnalyzeCampaignAsync(campaign.CompanyName, campaign.TargetKeyword, cancellationToken);
-
-        _logger.LogInformation("AI Audit complete. Sentiment Score: {Score}/100", auditResult.SentimentScore);
-
-        // b. Map AI output ontp relational AuditReport entity and child collectiosn save to database
+        // 1. Build relational AuditReport from Scraper result
         var auditReport = new AuditReport
         {
             CampaignId = campaign.Id,
-            SentimentScore = auditResult.SentimentScore,
-            BrandPositioning = auditResult.BrandPositioning,
-            Summary = auditResult.Summary,
+            SentimentScore = result.SentimentScore,
+            BrandPositioning = result.BrandPositioning,
+            Summary = result.Summary,
             CreatedAt = DateTime.UtcNow,
-            Competitors = auditResult.TopCompetitors
+            Competitors = result.TopCompetitors
                 .Select(name => new AuditCompetitor { Name = name })
                 .ToList(),
-            RecommendedKeywords = auditResult.RecommendedKeywords
+            RecommendedKeywords = result.RecommendedKeywords
                 .Select(keyword => new AuditRecommendedKeyword { Keyword = keyword })
                 .ToList()
         };
 
-        // c. Update coreCampaign fields and save AuditReport entity to database
-        // 3. Update database state
+        // 2. Transition campaign status and persist score/summary
         campaign.Status = "Completed";
-        campaign.VisibilityScore = auditResult.SentimentScore;
-        campaign.AuditSummary = auditResult.Summary;
+        campaign.VisibilityScore = result.SentimentScore;
+        campaign.AuditSummary = result.Summary;
         campaign.AuditedAt = DateTime.UtcNow;
 
-        // d. Save AuditReport entity to database
         context.AuditReports.Add(auditReport);
         await context.SaveChangesAsync(cancellationToken);
 
-        _logger.LogInformation("Successfully completed AI audit for Campaign: {CompanyName}, Campaign ID: {CampaignId}", campaign.CompanyName, campaign.Id);
+        _logger.LogInformation("Successfully saved audit report from Scraper for Campaign: {CompanyName} ({CampaignId})", campaign.CompanyName, campaign.Id);
 
-        // Notify connected web clients in real time via SignalR
-        // 4. Notify clients via SignalR
-        await _notificationService.NotificationAuditCompletedAsync(campaignId, "Completed", campaign.CompanyName);
+        // 3. Notify connected web clients via SignalR
+        await _notificationService.NotificationAuditCompletedAsync(campaign.Id, "Completed", campaign.CompanyName);
     }
 
     public async Task MarkCampaignAsFailedAsync(Guid campaignId, string errorMessage, CancellationToken cancellationToken)
@@ -229,7 +209,6 @@ public class CampaignAuditWorker : BackgroundService
                 await context.SaveChangesAsync(cancellationToken);
                 _logger.LogWarning("Updated Campaign ID {CampaignId} status to 'Failed' in database.", campaignId);
 
-                // Send real-time failure alert via SignalR
                 await _notificationService.NotificationAuditCompletedAsync(campaignId, "Failed", campaign.CompanyName);
             }
             else
@@ -250,5 +229,3 @@ public class CampaignAuditWorker : BackgroundService
         base.Dispose();
     }
 }
-
-public record CampaignCreatedMessage(Guid CampaignId);
